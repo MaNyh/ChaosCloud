@@ -1,0 +1,376 @@
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: npm
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    volumes:
+      - /docker_data/npm_data:/data
+      - /docker_data/npm_letsencrypt:/etc/letsencrypt
+    environment:
+      TZ: Europe/Berlin
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.10
+        aliases:
+          - npm
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /docker_data/portainer_data:/data
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.11
+        aliases:
+          - portainer
+
+  nextcloud:
+    image: nextcloud:apache
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - /docker_data/nextcloud_data:/var/www/html
+    environment:
+      MYSQL_HOST: db
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: STRONG_DB_PASSWORD
+      REDIS_HOST: redis
+      APACHE_DISABLE_REWRITE_IP: 1
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.20
+        aliases:
+          - nextcloud
+
+  db:
+    image: mariadb:10.11
+    container_name: nextcloud-db
+    restart: unless-stopped
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    volumes:
+      - /docker_data/nextcloud_db:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: STRONG_ROOT_PASSWORD
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: STRONG_DB_PASSWORD
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.30
+
+  redis:
+    image: redis:alpine
+    container_name: nextcloud-redis
+    restart: unless-stopped
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.40
+
+  nextcloud-cron:
+    image: nextcloud:apache
+    restart: unless-stopped
+    volumes:
+      - /docker_data/nextcloud_data:/var/www/html
+    entrypoint: /cron.sh
+    depends_on:
+      - db
+      - redis
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.21
+
+  collabora:
+    image: collabora/code:latest
+    container_name: collabora
+    restart: unless-stopped
+    environment:
+      - domain=zentralkomitee\.net|zentralkomitee\.chickenkiller\.com # chaospi\\.local   # Hostname des Hosts / LAN
+      - username=admin
+      - password=STRONG_PASSWORD
+      - extra_params=--o:admin_console.enable=false
+      #- extra_params=--o:ssl.enable=false --o:ssl.termination=true  # HTTP statt HTTPS
+    ports: 
+      - "9980:9980"
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.50
+        aliases:
+          - collabora
+
+  openproject:
+    image: openproject/openproject:16
+    container_name: openproject
+    restart: unless-stopped
+#    ports:
+#      - "8080:80"
+    environment:
+      OPENPROJECT_HOST__NAME: openproject.zentralkomitee.net
+      SECRET_KEY_BASE: ${OPENPROJECT_SECRET_KEY_BASE}
+      OPENPROJECT_HTTPS: "false"
+      OPENPROJECT_HSTS: "false"
+      OPENPROJECT_TRUSTED_PROXIES: "172.25.0.0/16"  # das Subnetz deines Docker-Proxy-Netzes
+    volumes:
+      - /docker_data/openproject/pgdata:/var/openproject/pgdata
+      - /docker_data/openproject/assets:/var/openproject/assets
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.60
+        aliases:
+          - openproject
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:${TAG_KC}
+    container_name: keycloak
+    restart: unless-stopped
+    command: start-dev
+    depends_on:
+      - keycloak-db
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: ${KC_DB_USER}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+
+      KEYCLOAK_ADMIN: ${KC_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PW}
+
+      KC_PROXY: edge
+      KC_HOSTNAME: keycloak.zentralkomitee.net
+      KC_HTTP_ENABLED: "true"
+
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.70
+        aliases:
+          - keycloak
+
+
+  keycloak-db:
+    image: postgres:16
+    container_name: keycloak-db
+    restart: unless-stopped
+    volumes:
+      - /docker_data/keycloak_db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: ${KC_DB_USER}
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD}
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.71
+
+  wiki-db:
+    image: postgres:15-alpine
+    container_name: wiki-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wiki
+      POSTGRES_USER: wikijs
+      POSTGRES_PASSWORD: wikijsrocks
+    volumes:
+      - /docker_data/wiki_db:/var/lib/postgresql/data
+    logging:
+      driver: none
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.81
+
+  wiki:
+    image: ghcr.io/requarks/wiki:2
+    container_name: wiki
+    restart: unless-stopped
+    depends_on:
+      - wiki-db
+    environment:
+      DB_TYPE: postgres
+      DB_HOST: wiki-db
+      DB_PORT: 5432
+      DB_USER: wikijs
+      DB_PASS: wikijsrocks
+      DB_NAME: wiki
+#    ports:
+#      - "3000:3000"   # Intern, kann per NPM über Reverse-Proxy auf z.B. wiki.zentralkomitee.net erreichbar gemacht werden
+    volumes:
+      - /docker_data/wiki_data:/wiki/data
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.80
+        aliases:
+          - wiki
+
+  kitchenowl-back:
+    image: tombursch/kitchenowl-backend:latest
+    container_name: kitchenowl-back
+    restart: unless-stopped
+    environment:
+      - JWT_SECRET_KEY=mhntuTQZ9o4IMxdLXI9ADRxR8+dK1XORzTpckILrsAI=
+      - FRONT_URL=https://groceries.zentralkomitee.net
+      - OIDC_CLIENT_ID=kitchenowl
+      - OIDC_CLIENT_SECRET=a0uKRndBzegocesuNZvEiWyV5BTSi9Fi
+      - OIDC_ISSUER=https://keycloak.zentralkomitee.net/realms/master/
+    volumes:
+      - /docker_data/kitchenowl_data:/data
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.90
+        aliases:
+          - kitchenowl-back
+
+  kitchenowl-front:
+    image: tombursch/kitchenowl-web:latest
+    container_name: kitchenowl-front
+    restart: unless-stopped
+    depends_on:
+      - kitchenowl-back
+    environment:
+      - BACK_URL=kitchenowl-back:5000
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.91
+        aliases:
+          - kitchenowl-front
+
+  spliit-db:
+    image: postgres:16
+    container_name: spliit-db
+    restart: unless-stopped
+    volumes:
+      - /docker_data/spliit_db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: spliit
+      POSTGRES_USER: spliit
+      POSTGRES_PASSWORD: STRONG_SPLIIT_PASSWORD
+      TZ: Europe/Berlin
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.100
+
+  spliit:
+    image: crazymax/spliit:latest
+    container_name: spliit
+    restart: unless-stopped
+    depends_on:
+      - spliit-db
+    environment:
+      TZ: Europe/Berlin
+      POSTGRES_HOST: spliit-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: spliit
+      POSTGRES_USER: spliit
+      POSTGRES_PASSWORD: STRONG_SPLIIT_PASSWORD
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.101
+        aliases:
+          - spliit
+
+  spliit-oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    container_name: spliit-oauth2-proxy
+    restart: unless-stopped
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_CLIENT_ID: spliit
+      OAUTH2_PROXY_CLIENT_SECRET: CUeqcA7SElS1z7mSNs5z3UXpNlKMLegh
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://keycloak.zentralkomitee.net/realms/master
+
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_COOKIE_SECRET: 4eP5UVhkYpwbpu1vDfJMJA==
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_ALLOW_EMAIL_NOT_VERIFIED: "true"
+      OAUTH2_PROXY_COOKIE_DOMAINS: ".zentralkomitee.net"
+      OAUTH2_PROXY_COOKIE_EXPIRY: 1h
+      OAUTH2_PROXY_UPSTREAMS: http://spliit:3000
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_REDIRECT_URL: https://expenses.zentralkomitee.net/oauth2/callback
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.102
+        aliases:
+          - spliit-oauth2-proxy
+
+  wordpress-db:
+    image: mariadb:11
+    container_name: wordpress-db
+    restart: unless-stopped
+    volumes:
+      - /docker_data/wordpress_db:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: STRONG_ROOT_PASSWORD
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: STRONG_DB_PASSWORD
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.110
+
+  wordpress:
+    image: wordpress:6.5-apache
+    container_name: wordpress
+    restart: unless-stopped
+    depends_on:
+      - wordpress-db
+    environment:
+      WORDPRESS_DB_HOST: wordpress-db:3306
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: STRONG_DB_PASSWORD
+      WORDPRESS_DB_NAME: wordpress
+
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_ALLOW_MULTISITE', true);
+        define('FORCE_SSL_ADMIN', true);
+
+        if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO']) && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+          $$_SERVER['HTTPS'] = 'on';
+        }
+
+    volumes:
+      - /docker_data/wordpress_data:/var/www/html
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.111
+        aliases:
+          - wordpress
+
+  actual:
+    image: docker.io/actualbudget/actual-server:latest
+    container_name: actual
+    restart: unless-stopped
+
+    volumes:
+      - /docker_data/actual_data:/data
+
+    healthcheck:
+      test: ['CMD-SHELL', 'node src/scripts/health-check.js']
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.120
+        aliases:
+          - actual
+
+
+networks:
+  proxy:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
