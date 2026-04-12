@@ -367,6 +367,23 @@ services:
         aliases:
           - actual
 
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    volumes:
+      - /docker_data/homeassistant_data:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro
+    user: "1000:1000"
+    environment:
+      TZ: Europe/Berlin
+
+    networks:
+      proxy:
+        ipv4_address: 172.25.0.130
+        aliases:
+          - homeassistant
 
 networks:
   proxy:
